@@ -106,6 +106,7 @@ class ExecuteRequest(BaseModel):
     qty: Optional[str] = None           # 수량 문자열 (정밀도 처리는 거래소 클라이언트에서)
     price: Optional[str] = None         # 지정가 주문 가격 문자열
     sl_price: Optional[float] = None
+    trailing_stop_distance: Optional[float] = None   # TP1 체결 후 트레일링 스탑 거리 (USDT, 1x ATR)
     tp_orders: Optional[List[dict]] = None   # [{"side": "Sell", "qty": "0.001", "price": "45000.0"}]
     dca_orders: Optional[List[dict]] = None  # DCA 추가매수 지정가 주문 목록 (market_entry와 함께)
     leverage: Optional[int] = None
@@ -675,7 +676,9 @@ async def execute_order(request: Request, execute_req: ExecuteRequest):
             position_qty = position.qty if position else Decimal("0")
 
             sl_set = False
-            if request.sl_price:
+            if request.trailing_stop_distance:
+                sl_set = await client.set_trailing_stop(symbol, request.trailing_stop_distance)
+            elif request.sl_price:
                 sl_set = await client.set_stop_loss(symbol, Decimal(str(request.sl_price)))
 
             tp_order_ids = []

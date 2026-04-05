@@ -392,6 +392,7 @@ class AgentExchangeClient:
                     "category": "linear",
                     "symbol": symbol,
                     "stopLoss": str(rounded_sl),
+                    "trailingStop": "0",   # 기존 트레일링 스탑 클리어 (재조정 시 충돌 방지)
                     "slTriggerBy": "LastPrice",
                     "positionIdx": 0,
                 })
@@ -434,6 +435,48 @@ class AgentExchangeClient:
             logger.error(f"Failed to set stop loss for {symbol}: {e}")
             raise ExchangeError(f"set_stop_loss failed for {symbol}: {e}")
 
+    async def set_trailing_stop(self, symbol: str, trailing_distance: float) -> bool:
+        """트레일링 스탑 설정. Bybit: USDT 거리, Bitget: callbackRatio(%) 자동 변환."""
+        try:
+            await self._ensure_markets()
+            if self.exchange_id == "bybit":
+                await self.exchange.private_post_v5_position_trading_stop({
+                    "category": "linear",
+                    "symbol": symbol,
+                    "stopLoss": "0",                                # 기존 고정 SL 클리어
+                    "trailingStop": str(round(trailing_distance, 1)),
+                    "positionIdx": 0,
+                })
+            elif self.exchange_id == "bitget":
+                position = await self.get_position(symbol)
+                if not position:
+                    logger.warning(f"[TrailingStop] No position found for {symbol}")
+                    return False
+                close_side = "sell" if position.side == "LONG" else "buy"
+                mark_price = float(position.mark_price or position.entry_price)
+                callback_ratio = round(trailing_distance / mark_price * 100, 4)
+                await self.exchange.private_mix_post_v2_mix_order_place_plan_order({
+                    "symbol": symbol,
+                    "productType": "USDT-FUTURES",
+                    "marginMode": "crossed",
+                    "marginCoin": "USDT",
+                    "planType": "track_plan",
+                    "triggerPrice": str(mark_price),
+                    "triggerType": "mark_price",
+                    "callbackRatio": str(callback_ratio),
+                    "size": str(position.qty),
+                    "side": close_side,
+                    "orderType": "market",
+                })
+            else:
+                logger.warning(f"[TrailingStop] {self.exchange_id} 미지원 — 스킵")
+                return False
+            logger.info(f"Trailing stop set: {symbol}, distance={trailing_distance}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set trailing stop for {symbol}: {e}")
+            return False
+
     async def cancel_order(self, symbol: str, order_id: str) -> bool:
         try:
             await self._ensure_markets()
@@ -474,7 +517,7 @@ class AgentExchangeClient:
                         logger.warning(f"Failed to batch cancel plan orders for {symbol}: {ce}")
                         
                 # 400172 방어를 위해 각 planType 명시적 일괄 취소도 병행
-                for p_type in ["profit_plan", "pos_loss", "pos_profit", "normal_plan"]:
+                for p_type in ["profit_plan", "pos_loss", "pos_profit", "normal_plan", "track_plan"]:
                     try:
                         await self.exchange.private_mix_post_v2_mix_order_cancel_plan_order({
                             "symbol": symbol,
